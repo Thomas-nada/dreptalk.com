@@ -22,7 +22,7 @@ import type { EpochStatsRow } from '../analytics/epochStats.js';
 import { epochFromUnix, type NetworkConfig } from '../config/network.js';
 import { readThresholdSnapshot } from '../governance/thresholds.js';
 import { govActionHref } from './links.js';
-import { NCL_PERIODS } from '../../../config/ncl-periods.js';
+import { NCL_PERIODS, type NclPeriod } from '../../../config/ncl-periods.js';
 import { nclStatusFor } from '../governance/ncl.js';
 import { epochReadiness, watermarks, type EpochReadiness } from './readiness.js';
 import { epochBoundsUnix, lovelaceToAda, REVIEW_PACK_VERSION } from './units.js';
@@ -34,6 +34,7 @@ import {
   readPowerCoverage,
   readPowerDrops,
   readPowerForDreps,
+  readRationalesForActions,
   readTopDrepsAtEpoch,
   readVoteHistoryForActions,
   readVoteHistoryInRange,
@@ -41,8 +42,10 @@ import {
   readVotesInRange,
   readWindowActions,
   type ActionDbRow,
+  type RationaleRow,
   type VoteRow,
 } from './packReads.js';
+import { positionsVoterAnchor } from '../governance/voteStatement.js';
 
 export interface PackAction {
   id: string;
@@ -115,6 +118,11 @@ export interface WindowPack {
    *  end, or when the hot key is unmapped); `activeAtWindowEnd` is whether the member counts
    *  at the boundary that closes the window, the next transition after its last epoch. */
   ccVotes: Record<string, Array<{ hotKeyHex: string; name: string | null; vote: string; epochCast: number | null; activeAtDecision: boolean | null; activeAtWindowEnd: boolean | null }>>;
+  /** Per action in events and closingAtBoundary: what voters wrote about their
+   *  ballot, in their own words. The largest DRep voters by power at epochTo
+   *  that left a rationale, every committee member's, and a few pool operators'.
+   *  Excerpts are the opening of the rationale, the url opens the full text. */
+  rationales: Record<string, Array<{ voterId: string; role: 'DRep' | 'SPO' | 'CC'; name: string | null; vote: string; powerAda: number | null; excerpt: string; url: string }>>;
   /** The committee at the boundary that closes the window (the transition into
    *  `asOfEpoch + 1`, the earliest point the ledger could decide anything still open):
    *  every seat of the version in force there, with whether it counts and why not.
@@ -182,6 +190,9 @@ const LEAD_IN_EPOCHS = 20;
 const VOTE_LEAD_IN_EPOCHS = 4;
 const TOP_DREPS = 15;
 const TOP_VOTERS = 12;
+/** Rationales kept per action and role: DReps by power, pools by ballot order, every committee member. */
+const TOP_RATIONALES = { DRep: 8, SPO: 3 } as const;
+const RATIONALE_EXCERPT = 700;
 const TOP_WITHDRAWALS = 5;
 const MAX_DROPS = 10;
 /** A committee term expiring this soon after the window is worth a sentence. */
@@ -446,6 +457,49 @@ function topVoters(
   return out;
 }
 
+/** The opening of a rationale, cut on a word boundary so a quote never ends mid-word. */
+function rationaleExcerpt(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length <= RATIONALE_EXCERPT) return flat;
+  const cut = flat.slice(0, RATIONALE_EXCERPT);
+  return `${cut.slice(0, Math.max(cut.lastIndexOf(' '), RATIONALE_EXCERPT - 80))}…`;
+}
+
+/** Per action, the rationales worth reading: the largest DRep voters by power at the window's end, every committee member, a few pools. */
+function rationales(
+  ids: string[],
+  rows: RationaleRow[],
+  power: Map<string, number>,
+  names: Map<string, string | null>,
+  ccNames: CcNameIndex,
+  to: number,
+): WindowPack['rationales'] {
+  const out: WindowPack['rationales'] = {};
+  for (const id of ids) out[id] = [];
+  for (const r of rows) {
+    if (!out[r.ga_id]) continue;
+    const role = r.voter_role === 'DRep' ? 'DRep' : r.voter_role === 'SPO' ? 'SPO' : r.voter_role === 'ConstitutionalCommittee' ? 'CC' : null;
+    if (!role) continue;
+    out[r.ga_id].push({
+      voterId: r.voter_id,
+      role,
+      name: role === 'DRep' ? names.get(r.voter_id) ?? null : role === 'CC' && r.voter_hex ? ccNames.byHot(r.voter_hex) ?? null : null,
+      vote: r.vote,
+      powerAda: role === 'DRep' ? power.get(powerKey(r.voter_id, to)) ?? null : null,
+      excerpt: rationaleExcerpt(r.body_text),
+      url: `${govActionHref(r.ga_id)}${positionsVoterAnchor(r.voter_id, role === 'SPO' ? 'spo' : role === 'CC' ? 'cc' : undefined)}`,
+    });
+  }
+  for (const id of ids) {
+    const byRole = (role: 'DRep' | 'SPO' | 'CC') => out[id].filter((r) => r.role === role);
+    const dreps = byRole('DRep').sort((a, b) => (b.powerAda ?? -1) - (a.powerAda ?? -1) || a.voterId.localeCompare(b.voterId)).slice(0, TOP_RATIONALES.DRep);
+    const spos = byRole('SPO').sort((a, b) => a.voterId.localeCompare(b.voterId)).slice(0, TOP_RATIONALES.SPO);
+    const cc = byRole('CC').sort((a, b) => a.voterId.localeCompare(b.voterId));
+    out[id] = [...dreps, ...cc, ...spos];
+  }
+  return out;
+}
+
 /**
  * The boundary an action was decided at, as seen from the window's end: null
  * while the action was still open then, whatever its later lifecycle says (the
@@ -669,7 +723,23 @@ function buildNcl(
     const lovelace = withdrawalLovelace(w.onchain_payload);
     if (lovelace != null) readable.push({ enactedEpoch: w.enacted_epoch, lovelace });
   }
-  return NCL_PERIODS.filter((p) => p.startEpoch <= to && p.endEpoch >= from)
+  // A pack reports the period as it stood at the window's end. A later defining
+  // action that raised the ceiling or extended the runtime was not a fact yet in
+  // an earlier window, so before its epoch the earlier values are the operative
+  // ones and the raise is not announced at all.
+  const asOfWindow = (p: NclPeriod): NclPeriod => {
+    if (p.revisedFromEpoch == null || to >= p.revisedFromEpoch) return p;
+    return {
+      ...p,
+      ceilingLovelace: p.previousCeilingLovelace ?? p.ceilingLovelace,
+      previousCeilingLovelace: undefined,
+      endEpoch: p.previousEndEpoch ?? p.endEpoch,
+      previousEndEpoch: undefined,
+      revisedFromEpoch: undefined,
+    };
+  };
+  return NCL_PERIODS.map(asOfWindow)
+    .filter((p) => p.startEpoch <= to && p.endEpoch >= from)
     .sort((a, b) => b.startEpoch - a.startEpoch)
     .map((p) => {
       const status = nclStatusFor(p, readable);
@@ -840,6 +910,7 @@ export async function buildWindowPack(
 
   const [ccNameRows, { members, hotToCold }] = await Promise.all([getAllCcMemberNames(db), getCommitteeTimeline(db)]);
   const ccNames = buildCcNameIndex(ccNameRows, hotToCold);
+  const rationaleRows = await readRationalesForActions(db, focusIds);
   const activeCache = new Map<number, Set<string>>();
   const activeAt = (boundaryEpoch: number): Set<string> => {
     const hit = activeCache.get(boundaryEpoch);
@@ -884,6 +955,7 @@ export async function buildWindowPack(
     topVoters: topVoters(focusIds, focusCurrent, cfg, power, names, to),
     topDreps,
     ccVotes: ccVotes(focusActions, focusCurrent, cfg, ccNames, hotToCold, activeAt, to),
+    rationales: rationales(focusIds, rationaleRows, power, names, ccNames, to),
     committee: {
       asOfEpoch: to,
       boundaryEpoch: to + 1,
