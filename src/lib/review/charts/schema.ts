@@ -110,7 +110,71 @@ export const powerSpec = z.object({
   threshold: z.number().optional(),
 });
 
-export const chartSpecSchema = z.discriminatedUnion('type', [lineSpec, linesSpec, stackedSpec, barsSpec, hbarsSpec, seatsSpec, scatterSpec, powerSpec]);
+// Ballots of a few named voters on a few actions: rows are actions, columns
+// voters, each cell the pack's own ballot string. Equal cells show decisions,
+// not weights. `sources` names one pack path per cell in row order, such as
+// topDreps[0].ballots.<action id>, and the fact check compares the strings.
+export const matrixSpec = z.object({
+  ...base,
+  type: z.literal('matrix'),
+  columns: z.array(z.string().min(1)).min(1).max(8),
+  rows: z.array(z.object({
+    label: z.string().min(1),
+    cells: z.array(z.enum(['Yes', 'No', 'Abstain', 'did not vote'])).min(1),
+  })).min(1),
+}).refine((s) => s.rows.every((r) => r.cells.length === s.columns.length), { message: 'every row needs one cell per column' });
+
+// A request that came back: per panel one measure before and after, each
+// panel in its own unit, so `sources` names two paths per panel, before then
+// after. A threshold on a share panel draws the bar it had to reach.
+export const beforeAfterSpec = z.object({
+  ...base,
+  type: z.literal('beforeAfter'),
+  panels: z.array(z.object({
+    label: z.string().min(1),
+    format: formatSchema,
+    before: z.object({ label: z.string().min(1), value: z.number() }),
+    after: z.object({ label: z.string().min(1), value: z.number() }),
+    threshold: z.number().optional(),
+  })).min(1).max(3),
+});
+
+// Dated events on one epoch axis. `sources` names one pack path per item,
+// the epoch it is drawn at.
+export const timelineSpec = z.object({
+  ...base,
+  type: z.literal('timeline'),
+  items: z.array(z.object({
+    epoch: z.number().int(),
+    label: z.string().min(1),
+    tone: z.enum(['yes', 'no', 'abstain']).default('yes'),
+  })).min(2).max(8),
+});
+
+// A spending limit as one bar: the segments add up to the total, a marker draws
+// an earlier ceiling. `sources` names one path per segment, then the total,
+// then the marker when there is one.
+export const budgetSpec = z.object({
+  ...base,
+  type: z.literal('budget'),
+  segments: z.array(z.object({ label: z.string().min(1), value: z.number().min(0), tone: z.enum(['paid', 'approved', 'free']) })).min(2).max(4),
+  total: z.object({ label: z.string().min(1), value: z.number().positive() }),
+  marker: z.object({ label: z.string().min(1), value: z.number().positive() }).optional(),
+}).refine((s) => Math.abs(s.segments.reduce((a, x) => a + x.value, 0) - s.total.value) < 0.06, { message: 'segments must add up to the total' });
+
+// The same actions on two bodies side by side, each panel with its own bar.
+// `sources` names one path per row, panel by panel.
+export const compareSpec = z.object({
+  ...base,
+  type: z.literal('compare'),
+  panels: z.array(z.object({
+    title: z.string().min(1),
+    threshold: z.number().optional(),
+    rows: z.array(z.object({ label: z.string().min(1), value: z.number(), tone: z.enum(['yes', 'no', 'abstain']).default('yes') })).min(1).max(4),
+  })).min(2).max(3),
+});
+
+export const chartSpecSchema = z.discriminatedUnion('type', [lineSpec, linesSpec, stackedSpec, barsSpec, hbarsSpec, seatsSpec, scatterSpec, powerSpec, matrixSpec, beforeAfterSpec, timelineSpec, budgetSpec, compareSpec]);
 // The renderers accept a spec as written (before defaults are filled in), not
 // the parsed output, so callers don't have to spell out every field that has
 // a schema default. z.input keeps those fields optional in the type, matching
@@ -124,3 +188,8 @@ export type HbarsSpec = z.input<typeof hbarsSpec>;
 export type SeatsSpec = z.input<typeof seatsSpec>;
 export type ScatterSpec = z.input<typeof scatterSpec>;
 export type PowerSpec = z.input<typeof powerSpec>;
+export type MatrixSpec = z.input<typeof matrixSpec>;
+export type BeforeAfterSpec = z.input<typeof beforeAfterSpec>;
+export type TimelineSpec = z.input<typeof timelineSpec>;
+export type BudgetSpec = z.input<typeof budgetSpec>;
+export type CompareSpec = z.input<typeof compareSpec>;

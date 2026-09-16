@@ -161,3 +161,104 @@ describe('power', () => {
     expect(fig).toContain('Abstain');
   });
 });
+
+describe('matrix, before/after and timeline', () => {
+  const matrix = {
+    type: 'matrix' as const,
+    title: 'Five DReps on nine requests',
+    columns: ['Yoroi', 'YUTA'],
+    sources: ['a', 'b', 'c', 'd'],
+    rows: [
+      { label: 'Consensus', cells: ['Yes', 'Yes'] as ('Yes' | 'No' | 'Abstain' | 'did not vote')[] },
+      { label: 'Blockfrost', cells: ['Abstain', 'did not vote'] as ('Yes' | 'No' | 'Abstain' | 'did not vote')[] },
+    ],
+  };
+  const beforeAfter = {
+    type: 'beforeAfter' as const,
+    title: 'Tweag, first and second request',
+    sources: ['a', 'b', 'c', 'd'],
+    panels: [
+      { label: 'Sum asked', format: 'M' as const, before: { label: 'First request', value: 39.8 }, after: { label: 'Second request', value: 18.3 } },
+      { label: 'DRep support', format: '%' as const, before: { label: 'First request', value: 6.11 }, after: { label: 'Second request', value: 70.13 }, threshold: 67 },
+    ],
+  };
+  const timeline = {
+    type: 'timeline' as const,
+    title: 'Eternl, two requests',
+    sources: ['a', 'b', 'c'],
+    items: [
+      { epoch: 631, label: 'First request filed' },
+      { epoch: 637, label: 'Second request filed' },
+      { epoch: 638, label: 'First request expires', tone: 'no' as const },
+    ],
+  };
+  it('parses and rejects a ragged matrix', () => {
+    expect(chartSpecSchema.safeParse(matrix).success).toBe(true);
+    expect(chartSpecSchema.safeParse({ ...matrix, rows: [{ label: 'x', cells: ['Yes'] }] }).success).toBe(false);
+    expect(chartSpecSchema.safeParse(beforeAfter).success).toBe(true);
+    expect(chartSpecSchema.safeParse(timeline).success).toBe(true);
+  });
+  it('renders one cell per ballot with a symbol and a tone', () => {
+    const svg = renderChart(matrix);
+    expect(svg.match(/class="rv-cell/g)?.length).toBe(4);
+    expect(svg).toContain('rv-cell rv-none');
+    expect(svg).toContain('✓');
+    expect(renderFigure(matrix)).toContain('No ballot');
+  });
+  it('renders a before and an after dot per panel and the threshold', () => {
+    const svg = renderChart(beforeAfter);
+    expect(svg.match(/class="rv-dot rv-s3"/g)?.length).toBe(2);
+    expect(svg.match(/class="rv-dot rv-s1"/g)?.length).toBe(2);
+    expect(svg).toContain('67.0% bar');
+    expect(svg).toContain('39.8M');
+  });
+  it('renders every event on the epoch axis', () => {
+    const svg = renderChart(timeline);
+    expect(svg.match(/class="rv-dot/g)?.length).toBe(3);
+    expect(svg).toContain('First request expires');
+    expect(svg).toContain('>630<');
+  });
+});
+
+describe('budget and compare', () => {
+  const budget = {
+    type: 'budget' as const,
+    title: 'The ₳500M limit for epochs 613 to 713',
+    format: 'M' as const,
+    sources: ['a', 'b', 'c', 'd', 'e'],
+    segments: [
+      { label: 'Paid', value: 337.4, tone: 'paid' as const },
+      { label: 'Approved, not paid', value: 120, tone: 'approved' as const },
+      { label: 'Left', value: 42.6, tone: 'free' as const },
+    ],
+    total: { label: 'New limit', value: 500 },
+    marker: { label: 'Old limit', value: 350 },
+  };
+  const compare = {
+    type: 'compare' as const,
+    title: 'Two votes, two bodies',
+    format: '%' as const,
+    sources: ['a', 'b', 'c', 'd'],
+    panels: [
+      { title: 'DReps', threshold: 67, rows: [{ label: 'Committee update', value: 72.0 }, { label: 'Parameter change', value: 68.6 }] },
+      { title: 'Pools', threshold: 51, rows: [{ label: 'Committee update', value: 56.2 }, { label: 'Parameter change', value: 34.5, tone: 'no' as const }] },
+    ],
+  };
+  it('rejects segments that do not add up', () => {
+    expect(chartSpecSchema.safeParse(budget).success).toBe(true);
+    expect(chartSpecSchema.safeParse({ ...budget, total: { label: 'x', value: 400 } }).success).toBe(false);
+  });
+  it('draws three segments, the frame and the old limit', () => {
+    const svg = renderChart(budget);
+    expect(svg.match(/class="rv-seg/g)?.length).toBe(3);
+    expect(svg).toContain('Old limit: ₳350.0M');
+    expect(svg).toContain('₳337.4M');
+    expect(renderFigure(budget)).toContain('Approved, not paid');
+  });
+  it('draws each panel with its own bar', () => {
+    const svg = renderChart(compare);
+    expect(svg).toContain('67.0% bar');
+    expect(svg).toContain('51.0% bar');
+    expect(svg.match(/class="rv-bar/g)?.length).toBe(4);
+  });
+});
