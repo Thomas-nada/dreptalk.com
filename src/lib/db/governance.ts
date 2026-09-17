@@ -71,7 +71,8 @@ export interface NewGovernanceAction {
   onchainPayload?: string | null;
   /** Metadata-extraction version used when writing title/abstract/rationale_html. */
   metaVersion: number;
-  topicId: string;
+  /** Null while the action waits for a readable anchor before its thread opens. */
+  topicId: string | null;
   now: number;
 }
 
@@ -951,7 +952,10 @@ export async function updateVotedPower(db: D1Database, id: string, p: VotePowerF
  * such a row is stamped at the current version with empty metadata, so the
  * version check alone would never revisit it. Rows that have failed
  * re-extraction maxAttempts times are excluded: their anchor is treated as
- * permanently dead so the backfill stops retrying it every run.
+ * permanently dead so the backfill stops retrying it every run. Actions still
+ * waiting for their thread (topic_id IS NULL) are excluded too: createDeferredGovTopics
+ * re-reads those anchors itself, and a second reader would fetch the same document
+ * twice per run and double-spend the shared meta_attempts budget.
  */
 export async function getActionsNeedingMetaReextract(
   db: D1Database,
@@ -963,13 +967,40 @@ export async function getActionsNeedingMetaReextract(
     await db
       .prepare(
         `SELECT * FROM governance_actions
-         WHERE anchor_url IS NOT NULL AND (meta_version < ? OR anchor_status != 'ok') AND meta_attempts < ?
+         WHERE anchor_url IS NOT NULL AND topic_id IS NOT NULL
+           AND (meta_version < ? OR anchor_status != 'ok') AND meta_attempts < ?
          LIMIT ?`,
       )
       .bind(currentVersion, maxAttempts, limit)
       .all<GovernanceActionRow>()
   ).results ?? [];
   return rows.map(rowToGovernanceAction);
+}
+
+/**
+ * Actions discovered without a thread yet: the anchor was unreadable at
+ * discovery, so opening the thread (and freezing its title-derived slug on a
+ * fallback title) was deferred.
+ */
+export async function getActionsAwaitingTopic(db: D1Database, limit: number): Promise<GovernanceAction[]> {
+  const rows = (
+    await db
+      .prepare('SELECT * FROM governance_actions WHERE topic_id IS NULL LIMIT ?')
+      .bind(limit)
+      .all<GovernanceActionRow>()
+  ).results ?? [];
+  return rows.map(rowToGovernanceAction);
+}
+
+/**
+ * Attaches a freshly created topic to its action, as a prepared statement so it
+ * commits in the same batch as the topic and its first post. The topic_id guard
+ * makes a concurrent second run a no-op instead of a silent re-point.
+ */
+export function buildAttachActionTopic(db: D1Database, id: string, topicId: string): D1PreparedStatement {
+  return db
+    .prepare('UPDATE governance_actions SET topic_id = ? WHERE id = ? AND topic_id IS NULL')
+    .bind(topicId, id);
 }
 
 /** Records one failed metadata re-extraction attempt; drives the give-up cap. */
