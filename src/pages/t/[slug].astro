@@ -34,6 +34,10 @@ import { surveysEnabled } from '@/lib/surveys/switch.js';
 import { parseSurveyDefinition } from '@/lib/surveys/view.js';
 import type { SurveyDefinition } from 'cip-179';
 import { getTopicBySlug, getThreadPage, type ThreadPage } from '@/lib/db/forum.js';
+import { getCapByTopicId, parseCapVersions } from '@/lib/db/caps.js';
+import { composeVersionBodyMd } from '@/lib/cap/view.js';
+import { renderMarkdown } from '@/lib/markdown.js';
+import type { CapVersion } from '@/lib/cap/types.js';
 import { getRelatedTopics } from '@/lib/db/discussions.js';
 import { detectIdentifier } from '@/lib/search/identifiers.js';
 import { resolveIdentifier } from '@/lib/db/search.js';
@@ -155,6 +159,7 @@ const category = topic ? getCategory(topic.category_slug) : undefined;
 // exactly two batched queries (users, then dreps). No per-post lookups (no N+1).
 const isGovernanceTopic = topic?.source === 'governance';
 const isSurveyTopic = topic?.source === 'survey';
+const isCapTopic = topic?.source === 'cap';
 
 const identities = db
   ? await loadAuthorIdentities(db, [topic?.author_id, ...pagePosts.map((p) => p.author_id)])
@@ -173,10 +178,55 @@ const mandates = db
 // The first post of a system-sourced topic (governance action or survey)
 // carries the system identity even if its author_id is not literally gov-sync.
 const topicAuthor: AuthorDescriptor = topic
-  ? isGovernanceTopic || isSurveyTopic
+  ? isGovernanceTopic || isSurveyTopic || isCapTopic
     ? systemAuthor(topic.author_id)
     : describe(topic.author_id)
   : { authorId: '', displayName: '' };
+
+// CAP version switcher: load the mirrored version history and render the
+// selected version (default: the latest) in place of the opening post body, so
+// a reader can move through every revision without leaving the thread. The
+// override is done here, before ThreadPosts renders, so that shared component
+// needs no knowledge of versions.
+let capVersions: CapVersion[] = [];
+let capSelectedVersion: number | null = null;
+if (isCapTopic && db && topic && thread.openingPost) {
+  const capRow = await getCapByTopicId(db, topic.id);
+  capVersions = parseCapVersions(capRow?.versions_json ?? null);
+  if (capRow && capVersions.length > 0) {
+    const requested = Number(Astro.url.searchParams.get('v'));
+    // parseCapVersions sorts newest-first, so [0] is the latest.
+    const selected = capVersions.find((v) => v.version === requested) ?? capVersions[0];
+    capSelectedVersion = selected.version;
+    if (selected.content) {
+      const html = renderMarkdown(
+        composeVersionBodyMd(
+          {
+            number: capRow.number,
+            docType: capRow.doc_type === 'CIS' ? 'CIS' : 'CAP',
+            category: capRow.category,
+            sourceUrl: capRow.source_url,
+          },
+          selected.content,
+        ),
+      );
+      thread.openingPost.body_html = html;
+      const opening = thread.topLevel.find((p) => p.id === thread.openingPost!.id);
+      if (opening) opening.body_html = html;
+    }
+  }
+}
+const capLatestVersion = capVersions.length > 0 ? capVersions[0].version : null;
+const capVersionHref = (v: number) =>
+  v === capLatestVersion ? `/t/${topic?.slug}/` : `/t/${topic?.slug}/?v=${v}`;
+const capSelected = capVersions.find((v) => v.version === capSelectedVersion) ?? null;
+const capVersionMeta = (v: CapVersion): string => {
+  const when = v.date ? new Date(v.date) : null;
+  const day = when && !Number.isNaN(when.getTime()) ? when.toISOString().slice(0, 10) : null;
+  return [v.changeSummary || 'Updated', [day, v.author].filter(Boolean).join(', ')]
+    .filter(Boolean)
+    .join(' · ');
+};
 
 // Related topics for user topics only, shown as a slim section below the thread
 // (governance topics keep their own GaSidebar). Same category, most recent first.
@@ -943,6 +993,27 @@ const ogImage = topic ? `/og/t/${topic.slug}.png?v=${ogVersion}` : undefined;
             drepId={viewerDrepId}
           />
         )}
+        {isCapTopic && capVersions.length > 1 && (
+          <div class="cap-versions">
+            <div class="cap-versions__label">Versions</div>
+            <div class="cap-versions__tabs" role="tablist">
+              {capVersions.map((v) => (
+                <a
+                  class:list={['cap-versions__tab', { 'is-active': v.version === capSelectedVersion }]}
+                  href={capVersionHref(v.version)}
+                  aria-current={v.version === capSelectedVersion ? 'true' : undefined}
+                >
+                  v{v.version}{v.version === capLatestVersion ? ' (latest)' : ''}
+                </a>
+              ))}
+            </div>
+            {capSelected && (
+              <p class="cap-versions__meta">
+                Showing v{capSelected.version}: {capVersionMeta(capSelected)}
+              </p>
+            )}
+          </div>
+        )}
         <ThreadPosts
           topic={topic}
           thread={thread}
@@ -999,6 +1070,49 @@ const ogImage = topic ? `/og/t/${topic.slug}.png?v=${ogVersion}` : undefined;
 )}
 
 <style>
+  /* CAP version switcher: a small bar above the opening post that swaps the body
+     to any mirrored revision, defaulting to the latest. */
+  .cap-versions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 10px 0 14px;
+  }
+  .cap-versions__label {
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .cap-versions__tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .cap-versions__tab {
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 8px);
+    font-size: 0.9rem;
+    color: var(--fg);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .cap-versions__tab:hover {
+    border-color: var(--accent);
+  }
+  .cap-versions__tab.is-active {
+    background: var(--accent);
+    color: var(--on-accent, #fff);
+    border-color: var(--accent);
+  }
+  .cap-versions__meta {
+    flex-basis: 100%;
+    margin: 2px 0 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
   /* User-topic thread body wrapper. The reading width is set on <main> via the
      Layout `readingWidth` prop, so breadcrumb, title, and posts all align. */
   .thread-single {

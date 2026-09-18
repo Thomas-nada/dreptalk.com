@@ -5,6 +5,7 @@ import { getCategories } from '../../config/categories.js';
 import { listIndexableDrepIds } from '../lib/db/dreps.js';
 import { slugFor } from '../lib/review/windows.js';
 import { surveysEnabled } from '../lib/surveys/switch.js';
+import { capsEnabled } from '../lib/cap/switch.js';
 
 export const prerender = false;
 
@@ -39,7 +40,7 @@ export const GET: APIRoute = async ({ site }) => {
       path: `/glossary/${g.id}/`,
       ...(g.data.updated ? { lastmod: g.data.updated.toISOString() } : {}),
     })),
-    ...getCategories({ surveys: surveysEnabled(env) }).map((c) => ({ path: `/c/${c.slug}/` })),
+    ...getCategories({ surveys: surveysEnabled(env), caps: capsEnabled(env) }).map((c) => ({ path: `/c/${c.slug}/` })),
   ];
 
   const db = env.DB as D1Database | undefined;

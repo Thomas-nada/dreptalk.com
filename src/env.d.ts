@@ -64,6 +64,15 @@ declare namespace Cloudflare {
      * fetched from it. The link is omitted when unset.
      */
     TESSERA_APP_URL?: string;
+    /**
+     * CAP portal API origin (e.g. https://cap-portal-api.onrender.com).
+     * Non-empty = the CAP feature is on: gov-sync mirrors the portal's CIP-100
+     * documents into threads and the app renders /c/caps/ from D1. Empty or
+     * unset = off, the mirror phase is gated out and the category does not exist
+     * (unlisted, /c/caps/ a 404). Only gov-sync ever calls the URL; the app
+     * reads presence alone, through capsEnabled().
+     */
+    CAP_PORTAL_URL?: string;
     /** Moderator allowlist: comma-separated `<stake_addr>:<role>` pairs. */
     MODERATORS?: string;
     VAPID_PUBLIC_KEY?: string;

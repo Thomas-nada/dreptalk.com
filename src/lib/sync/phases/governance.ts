@@ -24,6 +24,8 @@ import { collectUnreferencedPins } from '../../governance/pinCollector.js';
 import { makePinataRemover } from '../../governance/pinata.js';
 import { runCip100Sync } from '../../cip100/cron.js';
 import { originForNetwork } from '../../cip100/origin.js';
+import { syncCaps } from '../../cap/sync.js';
+import type { CapSource } from '../../cap/types.js';
 import { runPostErasureSweep } from '../../db/postErasure.js';
 import { runFanout } from '../../notifications/fanout.js';
 import { dispatchWebPush, dispatchTelegram } from '../../notifications/dispatch.js';
@@ -46,6 +48,9 @@ export interface GovernanceSyncContext extends CoreSyncContext {
   tessera: SurveysTessera | null;
   /** Our Pinata group plus the delete-capable token. Null disables the collector. */
   pinGc: { groupId: string; jwt: string } | null;
+  /** Null while CAP_PORTAL_URL is unset/empty (the maintainer's off switch for
+   * the CAP portal mirror); the caps phase is gated out entirely. */
+  capSource: CapSource | null;
   state: GovernanceSyncState;
 }
 
@@ -138,6 +143,24 @@ export const governancePhases: readonly SyncPhaseDef<GovernanceSyncContext>[] = 
           ` failed=${r.failed}`,
       );
       return { items: r.written + r.published + r.finalCounts + r.tallies, failed: r.failed };
+    },
+  },
+  {
+    // CAP/CIS documents mirrored from the CAP portal's CIP-100 feed, each its own
+    // thread. Off-chain and small, so heavy-only (every ~15 min, not every 5):
+    // CAP threads are not time-critical like on-chain actions, and the portal is
+    // a single small app this should not poll harder than it must.
+    name: 'caps',
+    when: (ctx) => ctx.heavy && ctx.capSource !== null,
+    run: async (ctx) => {
+      if (!ctx.capSource) return { items: 0 };
+      const r = await syncCaps({ db: ctx.db, source: ctx.capSource, now: ctx.now, rand: randSuffix });
+      console.log(
+        `[caps] scanned=${r.scanned} opened=${r.opened} bodiesUpdated=${r.bodiesUpdated}` +
+          ` commentsInserted=${r.commentsInserted} commentsUpdated=${r.commentsUpdated}` +
+          ` commentsRemoved=${r.commentsRemoved} failed=${r.failed}`,
+      );
+      return { items: r.opened + r.commentsInserted + r.commentsUpdated, failed: r.failed };
     },
   },
   {

@@ -24,7 +24,7 @@ const core: CoreSyncContext = {
 
 function govCtx(
   heavy: boolean,
-  opts: { tessera?: boolean; pinGc?: boolean } = {},
+  opts: { tessera?: boolean; pinGc?: boolean; caps?: boolean } = {},
 ): GovernanceSyncContext {
   return {
     ...core,
@@ -34,6 +34,7 @@ function govCtx(
     tessera: opts.tessera ? ({} as GovernanceSyncContext['tessera']) : null,
     state: { mirrorHealthy: false },
     pinGc: opts.pinGc ? { groupId: 'grp', jwt: 'jwt' } : null,
+    capSource: opts.caps ? ({} as GovernanceSyncContext['capSource']) : null,
   };
 }
 
@@ -97,6 +98,14 @@ describe('governancePhases', () => {
       'threshold-backfill', 'metadata', 'gov-titles', 'pin-gc', 'post-dates', 'trending', 'params',
       'delegation-fanout', 'webpush', 'telegram', 'delegation-refresh', 'post-erasure', 'cip100',
     ]);
+  });
+
+  it('runs the CAP mirror only on a heavy tick with the portal source configured', () => {
+    // Off by default, and never on a light tick even when configured: CAP threads
+    // are not time-critical, so the mirror rides the heavy (~15 min) cadence.
+    expect(activePhaseNames(governancePhases, govCtx(true))).not.toContain('caps');
+    expect(activePhaseNames(governancePhases, govCtx(false, { caps: true }))).not.toContain('caps');
+    expect(activePhaseNames(governancePhases, govCtx(true, { caps: true }))).toContain('caps');
   });
 
   it('marks exactly discovery as primary and keeps names unique', () => {

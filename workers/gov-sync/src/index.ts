@@ -30,6 +30,7 @@ import { governancePhases, initialGovernanceSyncState } from '../../../src/lib/s
 import { votePhases } from '../../../src/lib/sync/phases/votes.js';
 import { drepPhases, initialDrepSyncState } from '../../../src/lib/sync/phases/dreps.js';
 import { imagesDownscaler } from '../../../src/lib/dreps/avatarStore.js';
+import { createCapSource } from '../../../src/lib/cap/source.js';
 import { createTesseraClient } from 'cardano-tessera-client';
 import type { VapidConfig } from '../../../src/lib/push/webPush.js';
 
@@ -145,6 +146,10 @@ export default {
                 env.PINATA_GOV_GROUP_ID && env.PINATA_JWT
                   ? { groupId: env.PINATA_GOV_GROUP_ID, jwt: env.PINATA_JWT }
                   : null,
+              // Non-empty CAP_PORTAL_URL switches the caps mirror phase on. The
+              // app never calls the portal; only this worker does, and only to
+              // read its public CIP-100 feed.
+              capSource: env.CAP_PORTAL_URL ? createCapSource(env.CAP_PORTAL_URL) : null,
               state: initialGovernanceSyncState(),
             };
             return runPhases(governancePhases, ctx, phase);

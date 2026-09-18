@@ -21,17 +21,26 @@ describe('categories config', () => {
   });
 
   it('getCategories returns categories sorted ascending by position', () => {
-    const sorted = getCategories({ surveys: true });
+    const sorted = getCategories({ surveys: true, caps: true });
     for (let i = 1; i < sorted.length; i++) {
       expect(sorted[i].position).toBeGreaterThan(sorted[i - 1].position);
     }
   });
 
   it('the survey kind is listed only where the switch is on', () => {
-    const kinds = (on: boolean) => getCategories({ surveys: on }).map((c) => c.kind);
+    const kinds = (on: boolean) =>
+      getCategories({ surveys: on, caps: true }).map((c) => c.kind);
     expect(kinds(true)).toContain('survey');
     expect(kinds(false)).not.toContain('survey');
-    expect(getCategories({ surveys: false })).toHaveLength(CATEGORIES.length - 1);
+    expect(getCategories({ surveys: false, caps: true })).toHaveLength(CATEGORIES.length - 1);
+  });
+
+  it('the cap kind is listed only where the switch is on', () => {
+    const kinds = (on: boolean) =>
+      getCategories({ surveys: true, caps: on }).map((c) => c.kind);
+    expect(kinds(true)).toContain('cap');
+    expect(kinds(false)).not.toContain('cap');
+    expect(getCategories({ surveys: true, caps: false })).toHaveLength(CATEGORIES.length - 1);
   });
 
   it('getCategory returns undefined for unknown slug', () => {

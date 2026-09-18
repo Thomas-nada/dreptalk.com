@@ -9,8 +9,10 @@ import TopicRow from '@/components/TopicRow.astro';
 import GovActionRow from '@/components/GovActionRow.astro';
 import Pager from '@/components/Pager.astro';
 import CategoryShell from '@/components/CategoryShell.astro';
-import { getCategories, isDiscussion, GOVERNANCE_CATEGORY_SLUG, BUDGET_CATEGORY_SLUG, SURVEYS_CATEGORY_SLUG } from '../../../config/categories.js';
+import { getCategories, isDiscussion, GOVERNANCE_CATEGORY_SLUG, BUDGET_CATEGORY_SLUG, SURVEYS_CATEGORY_SLUG, CAPS_CATEGORY_SLUG } from '../../../config/categories.js';
 import { surveysEnabled } from '@/lib/surveys/switch.js';
+import { capsEnabled } from '@/lib/cap/switch.js';
+import { getCapTopics, getCapTypeCounts } from '@/lib/db/caps.js';
 import { freshnessLine } from '@/lib/surveys/view.js';
 import SurveyRow from '@/components/survey/SurveyRow.astro';
 import { getSurveySyncState, listSurveysWithTopics, type SurveyListEntry } from '@/lib/db/surveys.js';
@@ -54,7 +56,7 @@ import { env } from 'cloudflare:workers';
 const { slug } = Astro.params;
 // The categories this deployment serves, for the sidebar and for resolving
 // the route: a category the switch hides is a 404 here, not an empty list.
-const allCategories = getCategories({ surveys: surveysEnabled(env) });
+const allCategories = getCategories({ surveys: surveysEnabled(env), caps: capsEnabled(env) });
 const category = slug ? allCategories.find((c) => c.slug === slug) : undefined;
 // Active network, passed to each row so it can turn an expiry epoch into a date.
 const netCfg = currentNetwork();
@@ -76,6 +78,11 @@ const now = Date.now();
 const isGovernanceCategory = category?.slug === GOVERNANCE_CATEGORY_SLUG;
 const isBudgetCategory = category?.slug === BUDGET_CATEGORY_SLUG;
 const isSurveysCategory = category?.slug === SURVEYS_CATEGORY_SLUG;
+const isCapsCategory = category?.slug === CAPS_CATEGORY_SLUG;
+// CAPs listing document-type filter (?type=CAP|CIS). Absent/unknown -> all.
+const capTypeParam = Astro.url.searchParams.get('type');
+const capType: 'CAP' | 'CIS' | null =
+  capTypeParam === 'CAP' || capTypeParam === 'CIS' ? capTypeParam : null;
 // OG card per category kind: the governance-actions overview gets its own card,
 // other discussion categories share the generic discussion card. The budget
 // category is finalized to the current treasury card after the overview loads,
@@ -137,6 +144,8 @@ let excerptHtml = new Map<string, string>();
 let surveyEntries: SurveyListEntry[] = [];
 let surveyAsOf: number | null = null;
 let surveyAsOfIncomplete = false;
+// CAPs listing: per-type counts for the All/CAP/CIS filter tabs.
+let capTypeCounts = { all: 0, cap: 0, cis: 0 };
 
 // The category sidebar stats are independent of the per-category data loaded
 // below, so start the query now and let it overlap with that work instead of
@@ -197,6 +206,18 @@ if (category && db) {
     surveyEntries = entries;
     surveyAsOf = syncState.tesseraFetchedAt;
     surveyAsOfIncomplete = syncState.incomplete;
+  } else if (isCapsCategory) {
+    const [capTopics, counts] = await Promise.all([
+      getCapTopics(db, { docType: capType, limit: PAGE_SIZE, offset }),
+      getCapTypeCounts(db),
+    ]);
+    topics = capTopics;
+    capTypeCounts = counts;
+    const topicIds = topics.map((t) => t.id);
+    [participantCounts, excerptHtml] = await Promise.all([
+      getParticipantCounts(db, topicIds),
+      getTopicExcerpts(db, topicIds),
+    ]);
   } else {
     topics = await getDiscussionTopics(db, category.slug, { sort: discussionSort, limit: PAGE_SIZE, offset });
     const topicIds = topics.map((t) => t.id);
@@ -266,10 +287,20 @@ const govQuery = (o: { sort?: GovSort; type?: string | null; status?: GovStatus 
 const pageHref = (p: number) =>
   isGovernanceCategory
     ? `/c/${category!.slug}/?${govQuery({})}&page=${p}`
-    : `/c/${category!.slug}/?page=${p}${discussionSort !== 'latest' ? `&sort=${discussionSort}` : ''}`;
+    : isCapsCategory
+      ? `/c/${category!.slug}/?page=${p}${capType ? `&type=${capType}` : ''}`
+      : `/c/${category!.slug}/?page=${p}${discussionSort !== 'latest' ? `&sort=${discussionSort}` : ''}`;
 
 // Discussion sort tab links.
 const sortHref = (key: DiscussionSort) => `/c/${category!.slug}/?sort=${key}`;
+// CAPs document-type filter tab links (?type=CAP|CIS, absent = all).
+const capTypeHref = (t: 'CAP' | 'CIS' | null) =>
+  t ? `/c/${category!.slug}/?type=${t}` : `/c/${category!.slug}/`;
+const CAP_TYPE_TABS: { key: 'CAP' | 'CIS' | null; label: string; count: number }[] = [
+  { key: null, label: 'All', count: capTypeCounts.all },
+  { key: 'CAP', label: 'CAP', count: capTypeCounts.cap },
+  { key: 'CIS', label: 'CIS', count: capTypeCounts.cis },
+];
 
 // Governance control links (status chips, sort dropdown, type dropdown) share
 // the same query string and only vary one param; this keeps them in sync and
@@ -488,6 +519,41 @@ const breadcrumbLd = {
                 <p class="ga-asof">{freshnessLine(surveyAsOf, surveyAsOfIncomplete, now)}</p>
               )}
             </>
+          )}
+        </>
+      ) : isCapsCategory ? (
+        <>
+          <div class="disc-controls">
+            <div class="seg" role="tablist">
+              {CAP_TYPE_TABS.map((t) => (
+                <a
+                  class:list={['seg__btn', { 'is-active': t.key === capType }]}
+                  href={capTypeHref(t.key)}
+                  aria-current={t.key === capType ? 'true' : undefined}
+                >
+                  {t.label} <span class="seg__count">{t.count}</span>
+                </a>
+              ))}
+            </div>
+          </div>
+
+          {topics.length === 0 ? (
+            <p style="color:var(--muted);">No proposals in this view yet.</p>
+          ) : (
+            <div style="display:flex;flex-direction:column;gap:0;">
+              {topics.map((topic) => (
+                <TopicRow
+                  topic={topic}
+                  now={now}
+                  network={network}
+                  author={identities ? identities.describe(topic.author_id) : undefined}
+                  variant="discussions"
+                  participants={participantCounts.get(topic.id) ?? 0}
+                  excerpt={excerptHtml.has(topic.id) ? excerptFromHtml(excerptHtml.get(topic.id)!, 140) : undefined}
+                  mandate={topic.proposer_grant_id ? mandates.get(topic.proposer_grant_id) : undefined}
+                />
+              ))}
+            </div>
           )}
         </>
       ) : (

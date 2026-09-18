@@ -1,8 +1,11 @@
-// 'governance' and 'survey' categories are system-fed (one thread per synced
-// on-chain object, read-only at the category level); 'discussion' categories
-// take user topics. Consumers branching on the kind must not answer questions
-// about surveys nobody asked, hence a kind of its own, not 'governance'.
-export type CategoryKind = 'governance' | 'discussion' | 'survey';
+// 'governance', 'survey' and 'cap' categories are system-fed (one thread per
+// synced object, read-only at the category level); 'discussion' categories take
+// user topics. Consumers branching on the kind must not answer questions about
+// surveys nobody asked, hence a kind of its own, not 'governance'. 'cap' is the
+// same idea for off-chain CAP portal documents (Constitutional Amendment
+// Proposals and Constitutional Issue Statements), mirrored from the portal
+// rather than read from chain.
+export type CategoryKind = 'governance' | 'discussion' | 'survey' | 'cap';
 
 export interface Category {
   slug: string;
@@ -18,15 +21,16 @@ export const CATEGORIES: Category[] = [
   { slug: 'budget', name: 'Budget and Treasury', description: 'Treasury withdrawals and the budget process.', kind: 'discussion', position: 3 },
   { slug: 'general', name: 'General and Off-topic', description: 'General Cardano governance discussion.', kind: 'discussion', position: 4 },
   { slug: 'surveys', name: 'Surveys', description: 'On-chain CIP-179 surveys linked to governance actions, one thread each, opened automatically.', kind: 'survey', position: 5 },
+  { slug: 'caps', name: 'CAPs', description: 'Constitutional Amendment Proposals and Constitutional Issue Statements, mirrored from the CAP portal, one thread each.', kind: 'cap', position: 6 },
 ];
 
 export const GOVERNANCE_CATEGORY_SLUG = 'governance-actions';
 export const BUDGET_CATEGORY_SLUG = 'budget';
 export const SURVEYS_CATEGORY_SLUG = 'surveys';
+export const CAPS_CATEGORY_SLUG = 'caps';
 
 // Pre-sorted once at module load; avoids repeated sort on every getCategories() call.
 const SORTED_CATEGORIES: readonly Category[] = [...CATEGORIES].sort((a, b) => a.position - b.position);
-const WITHOUT_SURVEYS: readonly Category[] = SORTED_CATEGORIES.filter((c) => c.kind !== 'survey');
 
 /**
  * Which optional category kinds this deployment switches on. The survey kind
@@ -39,10 +43,15 @@ const WITHOUT_SURVEYS: readonly Category[] = SORTED_CATEGORIES.filter((c) => c.k
  */
 export interface CategorySwitches {
   surveys: boolean;
+  caps: boolean;
 }
 
 export function getCategories(on: CategorySwitches): readonly Category[] {
-  return on.surveys ? SORTED_CATEGORIES : WITHOUT_SURVEYS;
+  return SORTED_CATEGORIES.filter((c) => {
+    if (c.kind === 'survey') return on.surveys;
+    if (c.kind === 'cap') return on.caps;
+    return true;
+  });
 }
 
 export function getCategory(slug: string): Category | undefined {

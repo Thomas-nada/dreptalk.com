@@ -11,7 +11,7 @@ export interface Topic {
   id: string;
   category_slug: string;
   author_id: string;
-  source: 'user' | 'governance' | 'survey';
+  source: 'user' | 'governance' | 'survey' | 'cap';
   title: string;
   slug: string;
   pinned: boolean;
@@ -106,7 +106,7 @@ export function rowToTopic(row: TopicRow): Topic {
     id: row.id,
     category_slug: row.category_slug,
     author_id: row.author_id,
-    source: row.source as 'user' | 'governance' | 'survey',
+    source: row.source as 'user' | 'governance' | 'survey' | 'cap',
     title: row.title,
     slug: row.slug,
     pinned: row.pinned === 1,
@@ -181,7 +181,7 @@ interface CreateTopicArgs {
   title: string;
   bodyMd: string;
   bodyHtml: string;
-  source?: 'user' | 'governance' | 'survey';
+  source?: 'user' | 'governance' | 'survey' | 'cap';
   now: number;
   // Overrides the timestamp written to the topic's created_at/last_post_at and the
   // first post's created_at. Defaults to `now`. The governance sync passes the
